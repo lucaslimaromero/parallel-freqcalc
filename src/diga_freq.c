@@ -45,54 +45,91 @@ int main(){
     char texto[TAM]; // Entrada do usuario: max 1000 caracteres + '\0'
     int first = 1;
 
-    while(fgets(texto, TAM, stdin)){
-        CharFreq charFreq[96]; // Criamos um vetor de tuplas, em que cada par é dado pelo char e sua frequencia correspondente. 96 posições referentes as possibilidades de codigo ascii das especificacoes (32 a 128)
-        int i; 
-        char *charAtual; // Variavel auxiliar que nos ajudara a percorrer nossa string 
-        int tamanhoTexto = strlen(texto);
+    // Criamos o time de threads que executará cada tarefa
+    #pragma omp parallel
+    {
+        #pragma omp single nowait // Uma única thread irá ser responsável por criar as tarefas: A thread leitora lê linha por linha
+        {
+            while(fgets(texto, TAM, stdin)){
 
-        // Preparacao da string
-        if (tamanhoTexto > 0 && texto[tamanhoTexto - 1] == '\n') { // Se há algo escrito, e na última posição tem a quebra de linha, trocamos ela pelo final de string '\0'
-            texto[tamanhoTexto - 1] = '\0';
-            tamanhoTexto--;
+                char* linha = (char*) malloc(strlen(texto) + 1); // Aloca memória para a cópia (+1 para o '\0')
+                if (linha == NULL) {
+                    // Trata possiveis erros na alocacao
+                    perror("Erro de alocação de memória para linha");
+                    // Se a alocação falhar, sair do loop de leitura. Da pra fazer isso tranquilo, pois é só a thread single que está aqui
+                    break; 
+                }
+
+                // Copiar o conteúdo LIDO PELO fgets (de 'texto') para a NOVA memória alocada.
+                strcpy(linha, texto);
+
+                // Este tamanho será usado na Task antes de remover o \n.
+                int tamanhoOriginal_para_task = strlen(linha);
+
+                #pragma omp task firstprivate(linha, tamanhoOriginal_para_task)
+                {
+                    int tam = tamanhoOriginal_para_task; // Isso pode parecer estranho, essa mudanca de tam, mas se voce faz dentro da task, da problema, uma vez que 
+
+                    // Preparacao da string
+                    if (tam > 0 && linha[tam - 1] == '\n') { // Se há algo escrito, e na última posição tem a quebra de linha, trocamos ela pelo final de string '\0'
+                        linha[tam - 1] = '\0';
+                        tam--;
+                    } 
+            
+                    // Se a linha ficou vazia após remover o \n, pular processamento.
+                    if (tam == 0){
+                        #pragma omp critical // Devemos garantir que apenas uma thread leia isso, já que o putchar deve ser executado apenas uma vez
+                        {
+                            if(!first)
+                                putchar('\n');  
+                            first = 0;
+                        }
+                        free(linha);
+                    } else { // Se o tamanho não for 0, temos muito trabalho a ser feito
+                        
+                        // Criamos um vetor de tuplas, em que cada par é dado pelo char e sua frequencia correspondente. 96 posições referentes as possibilidades de codigo ascii das especificacoes (32 a 128)
+                        CharFreq charFreq[96];
+                        int i; 
+                        
+                        // Inicializando nossa struct que armazena os dados (char + freq)
+                        for(i = 0; i < 96; i++){
+                            charFreq[i].ascii = 32 + i; // Começa no 32 e vai até o código 32 + 95 = 127
+                            charFreq[i].frequencia = 0; // Inicializamos as frequências todas com 0
+                        }
+                
+                        #pragma omp parallel for shared(charFreq, linha, tam) schedule(static)       
+                        for(i = 0; i < tam; i++){
+                            int posicaoCorrigida = linha[i] - 32;
+                            #pragma omp atomic
+                            ++charFreq[posicaoCorrigida].frequencia;
+                        }
+                            
+                        // Vamos utilizar a funcao qsort
+                        qsort(charFreq, 96, sizeof(CharFreq), compare); 
+
+                        #pragma omp critical
+                        {
+                            if(!first)
+                                putchar('\n');
+        
+                            // Agora basta printar o resultado, para todos aqueles valores que de fato foram digitados
+                            for(i = 0; i < 96; i++){
+                                if(charFreq[i].frequencia > 0) // Ou seja, se foi digitado pelo menos uma vez, printamos
+                                    printf("%d %d\n", charFreq[i].ascii, charFreq[i].frequencia);
+                            } 
+                            first = 0;
+                        }
+
+                        free(linha);
+                    }
+            
+                }
+            
+            }   
+
         }
-
-        // O bloco de código simplesmente é para fins de eficiência: ele é uma forma de, caso não for digitado nada, não se perca tempo fazendo tudo o que vem depois
-        if (tamanhoTexto == 0 && !first){ // Se o cara digitar algo vazio, não faz sentido seguir em diante
-            putchar('\n');
-            continue;
-        } else if (tamanhoTexto == 0 && first){ // Se ele por acaso não receber nada 
-            first = 0; // Ele garante que a flag é trocada
-            continue;
-        }
-
-        // Inicializando nossa struct que armazena os dados (char + freq)
-        for(i = 0; i < 96; i++){
-            charFreq[i].ascii = 32 + i; // Começa no 32 e vai até o código 32 + 95 = 127
-            charFreq[i].frequencia = 0; // Inicializamos as frequências todas com 0
-        }
-
-        #pragma omp parallel for shared(charFreq, texto, tamanhoTexto) schedule(static)       
-        for(i = 0; i < tamanhoTexto; i++){
-            int posicaoCorrigida = texto[i] - 32;
-            #pragma omp atomic
-            ++charFreq[posicaoCorrigida].frequencia;
-        }
-              
-        // Vamos utilizar a funcao qsort, padrao da stdlib para ordenar nosso vetor de maneira inteligente
-        qsort(charFreq, 96, sizeof(CharFreq), compare); // Vetor, num de elementos, tamanho do elemento, funcao de comparacao que define a ordem dos elementos
-        // Essa func de comparacao retorna negativo se o primeiro elemento for menor que o segundo, zeor se forem iguais e positivo se o primeiro for maior que o segundo
-
-        if(!first)
-            putchar('\n');
-
-        // Agora basta printar o resultado, para todos aqueles valores que de fato foram digitados
-        for(i = 0; i < 96; i++){
-            if(charFreq[i].frequencia > 0) // Ou seja, se foi digitado pelo menos uma vez, printamos
-                printf("%d %d\n", charFreq[i].ascii, charFreq[i].frequencia);
-        }
-
-        first = 0;
+        #pragma omp taskwait
+    
     }
 
     return 0;
