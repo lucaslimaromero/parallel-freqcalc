@@ -1,9 +1,9 @@
-// Lucas Lima Romero (13676325)
-// Luciano Gonçalves Lopes Filho (13676520)
-// Marco Antonio Gaspar Garcia (11833581)
-// Rauany Martinez Secci (?)
-
 /* 
+
+- Lucas Lima Romero (13676325)
+- Luciano Gonçalves Lopes Filho (13676520)
+- Marco Antonio Gaspar Garcia (11833581)
+- Rauany Martinez Secci (13721217)
 
 Compilar:
     gcc diga_freq.c -o diga_freq -fopenmp
@@ -12,7 +12,7 @@ Executar:
     ./diga_freq
 
 Executar com arquivo de entrada:
-    ./diga_freq < entrada.txt
+    ./diga_freq < [nome_arquivo].txt
 
 */
 
@@ -21,15 +21,17 @@ Executar com arquivo de entrada:
 #include <string.h>
 #include <omp.h>
 
-#define TAM 1001
+#define TAM 1000
+#define ASCII_RANGE 96
+#define LIM_SORT_SEQ 96 // Limite para o sort sequencial: (faz tudo paralelo) 1 ≤ LIM_SORT_SEQ ≤ 96 (faz tudo sequencial)
 
 // Estrutura que armazena o par: DADO e sua FREQUENCIA correspondente (numero de vezes que apareceu)
 typedef struct{
     int ascii;
     int frequencia;
-} CharFreq;
+} CharFreq; // Usamos int, e não char e unsigned int p. ex, para facilitar a utilização em "compare"
 
-// Usamos int nas duas, e não char e unsigned int por exemplo, para facilitar a utilização em "compare"
+
 int compare(const void *primeiro, const void *segundo){
     // Fazemos o cast daquilo que foi enviado pelo compare
     CharFreq *p = (CharFreq *) primeiro;
@@ -38,99 +40,216 @@ int compare(const void *primeiro, const void *segundo){
     // Primeiros ordenamos pela frequencia (do menor pro maior)
     return p->frequencia != s->frequencia ? p->frequencia - s->frequencia : p->ascii - s->ascii;
     
-    // Se forem diferentes, a frequencia basta para diferencia-los. Se nao (se forem iguais) retornamos a diferenca entre os ascii (que sempre existira, por obviedade!)
+    // Se forem diferentes, a frequencia basta para diferencia-los. Se nao (se forem iguais) retornamos a diferenca entre os ascii (que sempre existirá, pois são caracteres diferentes)
 }
 
-int main(){
-    char texto[TAM]; // Entrada do usuario: max 1000 caracteres + '\0'
-    int first = 1;
 
-    // Criamos o time de threads que executará cada tarefa
-    #pragma omp parallel
-    {
-        #pragma omp single nowait // Uma única thread irá ser responsável por criar as tarefas: A thread leitora lê linha por linha
-        {
-            while(fgets(texto, TAM, stdin)){
+// Junta as partes ordenadas do vetor v
+void merge(CharFreq *v, int inicio, int meio, int fim) {
+    int n1 = meio - inicio + 1;
+    int n2 = fim - meio;
 
-                char* linha = (char*) malloc(strlen(texto) + 1); // Aloca memória para a cópia (+1 para o '\0')
-                if (linha == NULL) {
-                    // Trata possiveis erros na alocacao
-                    perror("Erro de alocação de memória para linha");
-                    // Se a alocação falhar, sair do loop de leitura. Da pra fazer isso tranquilo, pois é só a thread single que está aqui
-                    break; 
-                }
-
-                // Copiar o conteúdo LIDO PELO fgets (de 'texto') para a NOVA memória alocada.
-                strcpy(linha, texto);
-
-                // Este tamanho será usado na Task antes de remover o \n.
-                int tamanhoOriginal_para_task = strlen(linha);
-
-                #pragma omp task firstprivate(linha, tamanhoOriginal_para_task)
-                {
-                    int tam = tamanhoOriginal_para_task; // Isso pode parecer estranho, essa mudanca de tam, mas se voce faz dentro da task, da problema, uma vez que 
-
-                    // Preparacao da string
-                    if (tam > 0 && linha[tam - 1] == '\n') { // Se há algo escrito, e na última posição tem a quebra de linha, trocamos ela pelo final de string '\0'
-                        linha[tam - 1] = '\0';
-                        tam--;
-                    } 
-            
-                    // Se a linha ficou vazia após remover o \n, pular processamento.
-                    if (tam == 0){
-                        #pragma omp critical // Devemos garantir que apenas uma thread leia isso, já que o putchar deve ser executado apenas uma vez
-                        {
-                            if(!first)
-                                putchar('\n');  
-                            first = 0;
-                        }
-                        free(linha);
-                    } else { // Se o tamanho não for 0, temos muito trabalho a ser feito
-                        
-                        // Criamos um vetor de tuplas, em que cada par é dado pelo char e sua frequencia correspondente. 96 posições referentes as possibilidades de codigo ascii das especificacoes (32 a 128)
-                        CharFreq charFreq[96];
-                        int i; 
-                        
-                        // Inicializando nossa struct que armazena os dados (char + freq)
-                        for(i = 0; i < 96; i++){
-                            charFreq[i].ascii = 32 + i; // Começa no 32 e vai até o código 32 + 95 = 127
-                            charFreq[i].frequencia = 0; // Inicializamos as frequências todas com 0
-                        }
-                
-                        #pragma omp parallel for shared(charFreq, linha, tam) schedule(static)       
-                        for(i = 0; i < tam; i++){
-                            int posicaoCorrigida = linha[i] - 32;
-                            #pragma omp atomic
-                            ++charFreq[posicaoCorrigida].frequencia;
-                        }
-                            
-                        // Vamos utilizar a funcao qsort
-                        qsort(charFreq, 96, sizeof(CharFreq), compare); 
-
-                        #pragma omp critical
-                        {
-                            if(!first)
-                                putchar('\n');
-        
-                            // Agora basta printar o resultado, para todos aqueles valores que de fato foram digitados
-                            for(i = 0; i < 96; i++){
-                                if(charFreq[i].frequencia > 0) // Ou seja, se foi digitado pelo menos uma vez, printamos
-                                    printf("%d %d\n", charFreq[i].ascii, charFreq[i].frequencia);
-                            } 
-                            first = 0;
-                        }
-
-                        free(linha);
-                    }
-            
-                }
-            
-            }   
-
-        }
-        #pragma omp taskwait
+    //Criar vetores temporarios para as duas metades L e R.
     
+    CharFreq *L = malloc(n1 * sizeof(CharFreq));
+    CharFreq *R = malloc(n2 * sizeof(CharFreq));
+
+    // Copia os elementos do vetor v original para L e R.
+    #pragma omp simd
+    for (int i = 0; i < n1; i++) L[i] = v[inicio + i];
+
+    #pragma omp simd
+    for (int i = 0; i < n2; i++) R[i] = v[meio + 1 + i];
+
+    // Compara e ordena os elementos de L[i] e R[j]
+    int i = 0, j = 0, k = inicio;
+    while (i < n1 && j < n2) {
+        // se L[i] for menor ou igual copia ele para v[k]
+        if (compare(&L[i], &R[j]) <= 0) 
+            v[k++] = L[i++];
+        // caso contrario, copia R[j] para v[k]
+        else
+            v[k++] = R[j++];
     }
 
+    // Copia elementos que restarem em R ou L, se um dos vetores for maior que o outro. A ordem continua garantida pois os elementos do vetor restante estao ordenados e devem ser maiores que o maior elemento do vetor menor.
+    while (i < n1) v[k++] = L[i++];
+    while (j < n2) v[k++] = R[j++];
+
+    free(L);
+    free(R);
+}
+
+void mergeSortParalelo(CharFreq *v, int inicio, int fim) {
+    if (inicio < fim) { // Caso Base, tamanho 1
+        int meio = (inicio + fim) / 2;
+
+        #pragma omp task shared(v)
+        {
+            //printf("[mergeSort] Thread %d sorting [%d, %d]\n", omp_get_thread_num(), inicio, meio);
+            mergeSortParalelo(v, inicio, meio);
+        }
+
+        #pragma omp task shared(v)
+        {
+            //printf("[mergeSort] Thread %d sorting [%d, %d]\n", omp_get_thread_num(), meio+1, fim);
+            mergeSortParalelo(v, meio + 1, fim);
+        }
+
+        #pragma omp taskwait // Espera ambas tarefas acabarem
+        merge(v, inicio, meio, fim); // Junta e ordena as metades dos vetores
+        
+    }
+}
+
+char *processa_linha(const char *linha){
+    int frequencias[ASCII_RANGE] = {0};
+    int tam = strlen(linha);
+
+    CharFreq charFreq[ASCII_RANGE];
+    int i, contador = 0;
+
+    // #pragma omp parallel
+    // {
+    //     #pragma omp single
+    //     printf("Threads na região paralela: %d\n", omp_get_num_threads());
+    // }
+
+    /* A cláusula reduction foi testada para o segundo particionamento (dada uma string, queríamos fatiá-la entre as threads)
+
+    - Cada thread mantém uma cópia local do array frequencias (com 96 posições).
+
+    Ex.: 4 threads e tam = 1000, cada thread processará 250 iterações.
+
+    - A cláusula reduction foi retirada pois o overhead de sincronização se tornou maior que o ganho de tempo. No entanto, como ela fez parte da nossa história de implementação, decidimos deixar o código comentado.
+
+    */
+    
+    // double wtime = omp_get_wtime();
+    // #pragma omp parallel for reduction(+:frequencias[:ASCII_RANGE]) schedule(static) /*num_threads(4)*/  
+    for(i = 0; i < tam; i++){ 
+        if (linha[i] >= 32 && linha[i] < 128) frequencias[(int)(linha[i] - 32)]++;
+        
+        //printf("Número de threads: %d\n", omp_get_num_threads());
+        //Depuração: Qual thread está processando cada iteração
+        //printf("Thread %d processando i = %d\n", omp_get_thread_num(), i);
+    }
+    // wtime = omp_get_wtime() - wtime;
+    // printf("Tempo: %f segundos\n", wtime);
+
+
+    /*
+    
+    Diferença importante do paralelo para o sequencial
+
+    - Aqui, charFreq[i] não representa mais "o caractere de código ASCII i + 32".
+    - Agora, ele representa "o i-ésimo caractere com frequência > 0 da string atual".
+    
+    - Só importa os "contador" primeiros elementos, será neles que aplicaremos o sorting, e não em todos os 96 possíveis elementos. Isso reduz o tempo de execução do merge sort, pois o número de elementos a serem ordenados é reduzido.
+
+    */ 
+
+    // Avaliamos que não valeria a pena paralelizar esse loop pequeno, pois o overhead de sincronização para proteger o contador se tornou maior que o ganho de tempo. A vontade de paralelizar era grande, mas o resultado não foi satisfatório.
+    for(i = 0; i < ASCII_RANGE; i++){
+        if(frequencias[i] > 0){
+            charFreq[contador].ascii = i + 32;
+            charFreq[contador].frequencia = frequencias[i];
+            contador++;
+        }
+    }
+
+    // Escolhe o método de ordenação conforme o tamanho do vetor
+    if (contador < LIM_SORT_SEQ) {
+        // Para poucos elementos, qsort é mais eficiente
+        qsort(charFreq, contador, sizeof(CharFreq), compare);
+    } else {
+        // Para muitos elementos, usa merge sort paralelo
+        #pragma omp parallel
+        {
+            #pragma omp single
+            mergeSortParalelo(charFreq, 0, contador - 1);
+        }
+    }
+
+    char *buffer = malloc(sizeof(char) * (contador * 10 + 1));
+    char *p = buffer;
+
+    for (i = 0; i < contador; i++) {
+        p += sprintf(p, "%d %d\n", charFreq[i].ascii, charFreq[i].frequencia);
+    }
+
+    *p = '\0';
+    return buffer;
+}
+
+int main()
+{
+    
+    char texto[TAM]; // Armazena temporariamente uma linha lida da entrada padrão
+    int num_linhas = 0; // Conta o número de linhas lidas
+    int capacidade = 1000; // Capacidade inicial do array de linhas lidas
+
+    char **linhas = malloc(sizeof(char *) * capacidade); // Armazena todas as linhas lidas da entrada
+    if (!linhas) {
+        perror("Erro ao alocar memória para as linhas\n");
+        exit(EXIT_FAILURE);
+    }
+
+    omp_set_num_threads(omp_get_num_procs());
+    omp_set_nested(1); // Habilitamos para o merge sort paralelo
+    
+    // Leitura sequencial de todas as linhas da entrada padrão
+    while (fgets(texto, TAM, stdin)) // Lê uma linha por vez
+    {
+        texto[strcspn(texto, "\n")] = '\0'; // Remove a quebra de linha lida pelo fgets
+        if (texto[0] == '\0') // Se a linha estiver vazia, ignora
+            continue;
+
+        if (num_linhas >= capacidade) // Se necessário, dobra a capacidade do array
+        {
+            capacidade *= 2;
+            linhas = realloc(linhas, capacidade * sizeof(char *));
+        }
+
+        linhas[num_linhas++] = strdup(texto); // Copia a linha lida para o array
+    }
+
+    char **linhas_processadas = malloc(sizeof(char *) * num_linhas); // Array que armazenará a saída de cada linha processada
+    if (!linhas_processadas) {
+        perror("Erro ao alocar memória para as saídas\n");
+        exit(EXIT_FAILURE);
+    }
+
+    double wtime = omp_get_wtime(); // Marca o tempo inicial da execução paralela
+
+    // Processamento paralelo das linhas lidas. Esse é o ponto onde mais houve ganho de desempenho com entradas maiores como Hamlet.txt
+    #pragma omp parallel for schedule(dynamic) // Cada thread processa uma linha; balanceamento dinâmico
+    for (int i = 0; i < num_linhas; i++) {
+        linhas_processadas[i] = processa_linha(linhas[i]); // Processa a linha e armazena a saída
+        free(linhas[i]); // Libera a memória da linha original após processá-la
+        // printf("Número de threads: %d\n", omp_get_num_threads());
+        // // Depuração: Qual thread está processando cada iteração
+        // printf("Thread %d processando i = %d\n", omp_get_thread_num(), i);
+    }
+
+    wtime = omp_get_wtime() - wtime; // Calcula o tempo total de execução paralela
+
+    //Impressão dos resultados (comentada por padrão)
+    for (int i = 0; i < num_linhas; i++) {
+        if (i)
+            printf("\n");
+        printf("%s", linhas_processadas[i]);
+        free(linhas_processadas[i]); // Libera a memória da linha processada
+    }
+
+    // // Apenas libera a memória, sem imprimir
+    // for (int i = 0; i < num_linhas; i++) {
+    //     free(linhas_processadas[i]); // Libera a memória da saída de cada linha
+    // }
+
+    // printf("Tempo total: %lf segundos\n", wtime); // Tempo total de execução para depuração
+
+    free(linhas); // Libera memória do vetor de entrada
+    free(linhas_processadas); // Libera memória do vetor de saída
     return 0;
 }
